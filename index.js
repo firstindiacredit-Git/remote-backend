@@ -10,11 +10,19 @@ const path = require("path");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
+  pingTimeout: 60000,        // Increase ping timeout to 60 seconds
+  pingInterval: 25000,       // Ping every 25 seconds
+  connectTimeout: 30000,     // Connection timeout
   cors: {
-    origin: "*", // use specific domain in production
+    origin: "*",            // Allow all origins (you can restrict this in production)
     methods: ["GET", "POST"]
-  }
+  },
+  transports: ['websocket', 'polling'], // Prefer WebSocket, fallback to polling
 });
+
+// Set engine options
+io.engine.opts.pingTimeout = 60000;     // Match the pingTimeout above
+io.engine.opts.pingInterval = 25000;    // Match the pingInterval above
 
 app.use(cors());
 app.use(express.json());
@@ -107,9 +115,5 @@ app.get('/*', (req, res) => {
 const PORT = 5000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
-
-  // Increase Socket.IO ping timeout to prevent premature disconnects
-  io.engine.opts.pingTimeout = 30000; // 30 seconds ping timeout
-  io.engine.opts.pingInterval = 25000; // 25 seconds ping interval
 });
 
