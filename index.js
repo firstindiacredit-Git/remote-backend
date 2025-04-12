@@ -10,17 +10,18 @@ const path = require("path");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  pingTimeout: 120000,       // Increase ping timeout significantly
-  pingInterval: 10000,       // Ping more frequently 
-  connectTimeout: 60000,     // Longer connection timeout
-  transports: ['polling', 'websocket'], // Try polling first (more reliable on AWS)
-  allowUpgrades: true,       // Allow transport upgrades
-  perMessageDeflate: {       // Add compression
-    threshold: 1024          // Compress data larger than 1KB
-  },
+  path: '/socket.io',
+  serveClient: false,
+  pingTimeout: 60000,
+  pingInterval: 15000,
+  upgradeTimeout: 30000,
+  maxHttpBufferSize: 5e8, // 500MB - स्क्रीनशेयरिंग के लिए बड़े पेलोड को हैंडल करने के लिए
+  transports: ['polling', 'websocket'], 
+  allowUpgrades: true,
   cors: {
-    origin: "*",             // Allow all origins
-    methods: ["GET", "POST"]
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -36,6 +37,14 @@ const registerSocketHandlers = require("./socketHandlers/index");
 // server.js
 io.on("connection", (socket) => {
   console.log(`New connection with ID: ${socket.id}`);
+  
+  // Log transport type
+  console.log(`Transport used: ${socket.conn.transport.name}`);
+  
+  // Handle transport change
+  socket.conn.on('upgrade', (transport) => {
+    console.log(`Socket ${socket.id} upgraded transport to: ${transport.name}`);
+  });
 
   // Handle keep-alive pings
   socket.on("keep-alive", () => {
@@ -103,10 +112,17 @@ io.on("connection", (socket) => {
     socket.to(data.to).emit("screen-data", data);
   });
 
-  // Log detailed disconnect reasons
+  // Log detailed disconnect reasons with better error handling
   socket.on('disconnect', (reason) => {
     console.log(`Socket ${socket.id} disconnected due to: ${reason}`);
-    socket.broadcast.emit("controller-disconnected", socket.id);
+    
+    // Clean up any associated connections
+    for (const [clientId, hostId] of Object.entries(clientToHostMap)) {
+      if (clientId === socket.id || hostId === socket.id) {
+        delete clientToHostMap[clientId];
+        console.log(`Cleaned up connection mapping for ${socket.id}`);
+      }
+    }
   });
 });
 
