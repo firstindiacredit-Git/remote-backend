@@ -6,6 +6,8 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 const path = require("path");
 
+// स्टोर क्लाइंट और होस्ट कनेक्शन मैपिंग
+const clientToHostMap = {};
 
 const app = express();
 const server = http.createServer(app);
@@ -112,15 +114,38 @@ io.on("connection", (socket) => {
     socket.to(data.to).emit("screen-data", data);
   });
 
+  // Connect client to host
+  socket.on("connect-client-to-host", (data) => {
+    const { targetHostId } = data;
+    console.log(`Client ${socket.id} wants to connect to host ${targetHostId}`);
+    
+    // Store the mapping with timestamp
+    clientToHostMap[socket.id] = {
+      hostId: targetHostId,
+      timestamp: Date.now()
+    };
+    
+    // Emit event to host
+    io.to(targetHostId).emit("client-connected", { clientId: socket.id });
+  });
+
   // Log detailed disconnect reasons with better error handling
   socket.on('disconnect', (reason) => {
     console.log(`Socket ${socket.id} disconnected due to: ${reason}`);
     
-    // Clean up any associated connections
-    for (const [clientId, hostId] of Object.entries(clientToHostMap)) {
-      if (clientId === socket.id || hostId === socket.id) {
-        delete clientToHostMap[clientId];
-        console.log(`Cleaned up connection mapping for ${socket.id}`);
+    // Check if clientToHostMap exists and clean up any associated connections
+    if (clientToHostMap) {
+      for (const [clientId, hostId] of Object.entries(clientToHostMap)) {
+        // Check if the value is an object with timestamp or just a string
+        if (typeof hostId === 'object' && hostId.hostId) {
+          if (clientId === socket.id || hostId.hostId === socket.id) {
+            delete clientToHostMap[clientId];
+            console.log(`Cleaned up connection mapping for ${socket.id}`);
+          }
+        } else if (clientId === socket.id || hostId === socket.id) {
+          delete clientToHostMap[clientId];
+          console.log(`Cleaned up connection mapping for ${socket.id}`);
+        }
       }
     }
   });
@@ -154,12 +179,14 @@ setInterval(() => {
   const used = process.memoryUsage().heapUsed / 1024 / 1024;
   console.log(`Memory usage: ${Math.round(used * 100) / 100} MB`);
   
-  // क्लाइंट-होस्ट मैपिंग को साफ करें
-  const now = Date.now();
-  for (const [clientId, data] of Object.entries(clientToHostMap)) {
-    if (data.timestamp && now - data.timestamp > 3600000) { // 1 घंटे से पुरानी मैपिंग हटाएं
-      delete clientToHostMap[clientId];
-      console.log(`Cleaned stale mapping for ${clientId}`);
+  // क्लाइंट-होस्ट मैपिंग को साफ करें (अगर मौजूद है)
+  if (clientToHostMap) {
+    const now = Date.now();
+    for (const [clientId, data] of Object.entries(clientToHostMap)) {
+      if (data && data.timestamp && now - data.timestamp > 3600000) { // 1 घंटे से पुरानी मैपिंग हटाएं
+        delete clientToHostMap[clientId];
+        console.log(`Cleaned stale mapping for ${clientId}`);
+      }
     }
   }
 }, 300000); // हर 5 मिनट में चेक करें
