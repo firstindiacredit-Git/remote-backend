@@ -10,14 +10,18 @@ const path = require("path");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  pingTimeout: 60000,        // Increase ping timeout to 60 seconds
-  pingInterval: 25000,       // Ping every 25 seconds
-  connectTimeout: 30000,     // Connection timeout
-  cors: {
-    origin: "*",            // Allow all origins (you can restrict this in production)
-    methods: ["GET", "POST"]
+  pingTimeout: 120000,       // Increase ping timeout significantly
+  pingInterval: 10000,       // Ping more frequently 
+  connectTimeout: 60000,     // Longer connection timeout
+  transports: ['polling', 'websocket'], // Try polling first (more reliable on AWS)
+  allowUpgrades: true,       // Allow transport upgrades
+  perMessageDeflate: {       // Add compression
+    threshold: 1024          // Compress data larger than 1KB
   },
-  transports: ['websocket', 'polling'], // Prefer WebSocket, fallback to polling
+  cors: {
+    origin: "*",             // Allow all origins
+    methods: ["GET", "POST"]
+  }
 });
 
 // Set engine options
@@ -31,7 +35,7 @@ app.use(express.json());
 const registerSocketHandlers = require("./socketHandlers/index");
 // server.js
 io.on("connection", (socket) => {
-  console.log("New connection with ID:", socket.id);
+  console.log(`New connection with ID: ${socket.id}`);
 
   // Handle keep-alive pings
   socket.on("keep-alive", () => {
@@ -99,8 +103,9 @@ io.on("connection", (socket) => {
     socket.to(data.to).emit("screen-data", data);
   });
 
-  socket.on("disconnect", () => {
-    console.log(`Socket ${socket.id} disconnected`);
+  // Log detailed disconnect reasons
+  socket.on('disconnect', (reason) => {
+    console.log(`Socket ${socket.id} disconnected due to: ${reason}`);
     socket.broadcast.emit("controller-disconnected", socket.id);
   });
 });
@@ -112,7 +117,7 @@ app.get('/*', (req, res) => {
 });
 
 
-const PORT = 5000;
+const PORT = process.env.PORT || 443;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
 });
