@@ -117,7 +117,7 @@ app.get('/*', (req, res) => {
 });
 
 
-const PORT = process.env.PORT || 443;
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
 });
