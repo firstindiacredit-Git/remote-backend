@@ -138,3 +138,29 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
 });
 
+// इरर हैंडलिंग
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  // लॉग करें लेकिन प्रोसेस को क्रैश न करें
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // लॉग करें लेकिन प्रोसेस को क्रैश न करें
+});
+
+// स्थिरता सुनिश्चित करने के लिए मेमोरी लीक को रोकें
+setInterval(() => {
+  const used = process.memoryUsage().heapUsed / 1024 / 1024;
+  console.log(`Memory usage: ${Math.round(used * 100) / 100} MB`);
+  
+  // क्लाइंट-होस्ट मैपिंग को साफ करें
+  const now = Date.now();
+  for (const [clientId, data] of Object.entries(clientToHostMap)) {
+    if (data.timestamp && now - data.timestamp > 3600000) { // 1 घंटे से पुरानी मैपिंग हटाएं
+      delete clientToHostMap[clientId];
+      console.log(`Cleaned stale mapping for ${clientId}`);
+    }
+  }
+}, 300000); // हर 5 मिनट में चेक करें
+
