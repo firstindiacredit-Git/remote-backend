@@ -9,6 +9,9 @@ const path = require("path");
 // स्टोर क्लाइंट और होस्ट कनेक्शन मैपिंग
 const clientToHostMap = {};
 
+// Add a new map to store session codes for hosts
+const hostSessionCodes = {};
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -34,8 +37,6 @@ io.engine.opts.pingInterval = 25000;    // Match the pingInterval above
 app.use(cors());
 app.use(express.json());
 
-// Socket handlers
-const registerSocketHandlers = require("./socketHandlers/index");
 // server.js
 io.on("connection", (socket) => {
   console.log(`New connection with ID: ${socket.id}`);
@@ -54,14 +55,29 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host-ready", (data) => {
-    // Host computer announces it's ready to accept connections
-    // Include computer name if provided, otherwise use a default name
-    const hostInfo = {
-      id: socket.id,
-      name: data && data.computerName ? data.computerName : "Unknown Host"
-    };
-    
-    socket.broadcast.emit("host-available", hostInfo);
+    try {
+      console.log(`Host ready received from ${socket.id} with data:`, data);
+      // Generate a random 6-digit code for the host
+      const sessionCode = Math.floor(100000 + Math.random() * 900000).toString();
+      
+      console.log(`Generated session code ${sessionCode} for host ${socket.id}`);
+      
+      // Store this code mapped to the host's socket ID
+      hostSessionCodes[socket.id] = {
+        code: sessionCode,
+        computerName: data && data.computerName ? data.computerName : "Unknown Host",
+        pendingConnections: {}
+      };
+      
+      // Send the code to the host
+      console.log(`Sending session code ${sessionCode} to host ${socket.id}`);
+      socket.emit("session-code", sessionCode);
+      
+      // Additional check to ensure the code was stored
+      console.log("Current host session codes:", Object.keys(hostSessionCodes));
+    } catch (error) {
+      console.error("Error processing host-ready:", error);
+    }
   });
 
   socket.on("offer", (data) => {
@@ -135,9 +151,87 @@ io.on("connection", (socket) => {
     io.to(targetHostId).emit("client-connected", { clientId: socket.id });
   });
 
+  // Add new handlers for the session code connection flow
+  socket.on("connect-with-code", (data) => {
+    const { code } = data;
+    let hostId = null;
+    
+    // Find the host with this code
+    for (const [id, info] of Object.entries(hostSessionCodes)) {
+      if (info.code === code) {
+        hostId = id;
+        break;
+      }
+    }
+    
+    if (hostId) {
+      // Add this client to pending connections for this host
+      hostSessionCodes[hostId].pendingConnections[socket.id] = {
+        timestamp: Date.now(),
+        status: 'pending'
+      };
+      
+      // Notify the host that someone wants to connect
+      socket.to(hostId).emit("connection-request", {
+        clientId: socket.id,
+        timestamp: Date.now()
+      });
+      
+      // Notify the client that the code was valid
+      socket.emit("code-accepted", {
+        hostId,
+        hostName: hostSessionCodes[hostId].computerName
+      });
+    } else {
+      // Tell the client the code was invalid
+      socket.emit("code-rejected", { message: "Invalid session code" });
+    }
+  });
+
+  // Add a handler for the host to accept/reject connections
+  socket.on("connection-response", (data) => {
+    const { clientId, accepted } = data;
+    
+    if (accepted) {
+      // Update the connection status
+      if (hostSessionCodes[socket.id] && 
+          hostSessionCodes[socket.id].pendingConnections[clientId]) {
+        hostSessionCodes[socket.id].pendingConnections[clientId].status = 'accepted';
+      }
+      
+      // Notify the client
+      socket.to(clientId).emit("connection-accepted", {
+        hostId: socket.id,
+        hostName: hostSessionCodes[socket.id]?.computerName || "Unknown Host"
+      });
+    } else {
+      // Notify client of rejection
+      socket.to(clientId).emit("connection-rejected");
+      
+      // Remove from pending connections
+      if (hostSessionCodes[socket.id] && 
+          hostSessionCodes[socket.id].pendingConnections[clientId]) {
+        delete hostSessionCodes[socket.id].pendingConnections[clientId];
+      }
+    }
+  });
+
   // Log detailed disconnect reasons with better error handling
   socket.on('disconnect', (reason) => {
     console.log(`Socket ${socket.id} disconnected due to: ${reason}`);
+    
+    // Clean up session codes
+    if (hostSessionCodes[socket.id]) {
+      delete hostSessionCodes[socket.id];
+    }
+    
+    // Also check if any host has this client in pending connections
+    for (const hostId in hostSessionCodes) {
+      if (hostSessionCodes[hostId].pendingConnections &&
+          hostSessionCodes[hostId].pendingConnections[socket.id]) {
+        delete hostSessionCodes[hostId].pendingConnections[socket.id];
+      }
+    }
     
     // Check if clientToHostMap exists and clean up any associated connections
     if (clientToHostMap) {
