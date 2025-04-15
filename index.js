@@ -158,18 +158,10 @@ io.on("connection", (socket) => {
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
-app.use('/download', express.static(path.join(__dirname, 'download')));
-
-app.get('/download/RemoteDeskApp Setup 1.0.0 copy.exe', (req, res) => {
-  res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', 'attachment; filename="RemoteDeskApp Setup 1.0.0 copy.exe"');
-  res.sendFile(path.join(__dirname, 'download', 'RemoteDeskApp Setup 1.0.0 copy.exe'));
-});
 
 app.get('/*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
-
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
