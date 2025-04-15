@@ -53,9 +53,15 @@ io.on("connection", (socket) => {
     // Just acknowledge the ping, no need to do anything
   });
 
-  socket.on("host-ready", () => {
+  socket.on("host-ready", (data) => {
     // Host computer announces it's ready to accept connections
-    socket.broadcast.emit("host-available", socket.id);
+    // Include computer name if provided, otherwise use a default name
+    const hostInfo = {
+      id: socket.id,
+      name: data && data.computerName ? data.computerName : "Unknown Host"
+    };
+    
+    socket.broadcast.emit("host-available", hostInfo);
   });
 
   socket.on("offer", (data) => {
