@@ -249,6 +249,51 @@ io.on("connection", (socket) => {
       }
     }
   });
+
+  socket.on("start-screen-recording", (data) => {
+    console.log(`Screen recording started by ${data.from} for host ${data.to}`);
+    socket.to(data.to).emit("start-screen-recording", {
+      from: data.from,
+      recordingOptions: data.recordingOptions || {}
+    });
+  });
+
+  socket.on("stop-screen-recording", (data) => {
+    console.log(`Screen recording stopped by ${data.from} for host ${data.to}`);
+    socket.to(data.to).emit("stop-screen-recording", {
+      from: data.from
+    });
+  });
+
+  socket.on("recording-status", (data) => {
+    console.log(`Recording status update from ${socket.id} to ${data.to}: ${data.status}`);
+    socket.to(data.to).emit("recording-status", {
+      from: socket.id,
+      status: data.status,
+      progress: data.progress,
+      error: data.error
+    });
+  });
+
+  socket.on("recording-chunk", (data) => {
+    console.log(`Recording chunk from ${socket.id} to ${data.to}, size: ${data.chunk.length} bytes`);
+    socket.to(data.to).emit("recording-chunk", {
+      from: socket.id,
+      chunk: data.chunk,
+      chunkIndex: data.chunkIndex,
+      totalChunks: data.totalChunks
+    });
+  });
+
+  socket.on("recording-complete", (data) => {
+    console.log(`Recording complete from ${socket.id} to ${data.to}`);
+    socket.to(data.to).emit("recording-complete", {
+      from: socket.id,
+      recordingId: data.recordingId,
+      duration: data.duration,
+      fileSize: data.fileSize
+    });
+  });
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
