@@ -5,12 +5,40 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
 
 // स्टोर क्लाइंट और होस्ट कनेक्शन मैपिंग
 const clientToHostMap = {};
 
 // Add a new map to store session codes for hosts
 const hostSessionCodes = {};
+
+// Store trusted clients with their passwords
+const trustedClients = {};
+
+// Path to store persistent passwords
+const PASSWORDS_FILE = path.join(__dirname, 'trusted_clients.json');
+
+// Load saved passwords on startup
+try {
+  if (fs.existsSync(PASSWORDS_FILE)) {
+    const data = fs.readFileSync(PASSWORDS_FILE, 'utf8');
+    Object.assign(trustedClients, JSON.parse(data));
+    console.log(`Loaded ${Object.keys(trustedClients).length} saved trusted connections`);
+  }
+} catch (err) {
+  console.error('Error loading trusted clients:', err);
+}
+
+// Function to save trusted clients to file
+function saveTrustedClients() {
+  try {
+    fs.writeFileSync(PASSWORDS_FILE, JSON.stringify(trustedClients, null, 2));
+  } catch (err) {
+    console.error('Error saving trusted clients:', err);
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -66,7 +94,8 @@ io.on("connection", (socket) => {
       hostSessionCodes[socket.id] = {
         code: sessionCode,
         computerName: data && data.computerName ? data.computerName : "Unknown Host",
-        pendingConnections: {}
+        pendingConnections: {},
+        machineId: data.machineId || null
       };
       
       // Send the code to the host
@@ -77,6 +106,145 @@ io.on("connection", (socket) => {
       console.log("Current host session codes:", Object.keys(hostSessionCodes));
     } catch (error) {
       console.error("Error processing host-ready:", error);
+    }
+  });
+
+  // New handler for setting a permanent password
+  socket.on("set-access-password", (data) => {
+    try {
+      const { password, clientId } = data;
+      
+      if (!password || !clientId) {
+        socket.emit("password-response", { 
+          success: false, 
+          message: "Missing password or client ID"
+        });
+        return;
+      }
+
+      // Hash the password
+      const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+      
+      // Get machine ID from the host session
+      const machineId = hostSessionCodes[socket.id]?.machineId;
+      
+      if (!machineId) {
+        socket.emit("password-response", { 
+          success: false, 
+          message: "Missing machine ID for host"
+        });
+        return;
+      }
+      
+      // Store the trusted client with the password and the client ID it was set for
+      if (!trustedClients[machineId]) {
+        trustedClients[machineId] = {};
+      }
+      
+      trustedClients[machineId][clientId] = {
+        passwordHash: hashedPassword,
+        createdAt: Date.now(),
+        lastUsed: Date.now()
+      };
+      
+      // Save to persistent storage
+      saveTrustedClients();
+      
+      socket.emit("password-response", {
+        success: true,
+        message: "Password set successfully"
+      });
+      
+      // Notify the client
+      socket.to(clientId).emit("password-set-notification", {
+        hostId: socket.id,
+        machineId: machineId
+      });
+      
+    } catch (error) {
+      console.error("Error setting password:", error);
+      socket.emit("password-response", {
+        success: false,
+        message: "Error setting password: " + error.message
+      });
+    }
+  });
+
+  // New handler for connecting with password
+  socket.on("connect-with-password", (data) => {
+    const { machineId, password } = data;
+    
+    if (!machineId || !password) {
+      socket.emit("password-auth-response", {
+        success: false,
+        message: "Missing machine ID or password"
+      });
+      return;
+    }
+    
+    // Hash the provided password
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    
+    // Find the host with this machine ID
+    let hostId = null;
+    for (const [id, info] of Object.entries(hostSessionCodes)) {
+      if (info.machineId === machineId) {
+        hostId = id;
+        break;
+      }
+    }
+    
+    if (!hostId) {
+      socket.emit("password-auth-response", {
+        success: false,
+        message: "Host not found or not online"
+      });
+      return;
+    }
+    
+    // Check if there are trusted clients for this machine ID
+    if (!trustedClients[machineId]) {
+      socket.emit("password-auth-response", {
+        success: false,
+        message: "No trusted clients for this host"
+      });
+      return;
+    }
+    
+    // Check if this client is trusted (by checking any entry that has the matching password)
+    let isAuthenticated = false;
+    for (const clientData of Object.values(trustedClients[machineId])) {
+      if (clientData.passwordHash === hashedPassword) {
+        isAuthenticated = true;
+        
+        // Update last used timestamp
+        clientData.lastUsed = Date.now();
+        saveTrustedClients();
+        break;
+      }
+    }
+    
+    if (isAuthenticated) {
+      // Auto-accept the connection without host approval
+      console.log(`Auto-accepting client ${socket.id} to host ${hostId} (password auth)`);
+      
+      // Notify the client
+      socket.emit("connection-accepted", {
+        hostId: hostId,
+        hostName: hostSessionCodes[hostId]?.computerName || "Unknown Host",
+        automatic: true
+      });
+      
+      // Also notify the host
+      socket.to(hostId).emit("client-auto-connected", {
+        clientId: socket.id,
+        timestamp: Date.now()
+      });
+    } else {
+      socket.emit("password-auth-response", {
+        success: false,
+        message: "Invalid password"
+      });
     }
   });
 
@@ -190,7 +358,7 @@ io.on("connection", (socket) => {
 
   // Add a handler for the host to accept/reject connections
   socket.on("connection-response", (data) => {
-    const { clientId, accepted } = data;
+    const { clientId, accepted, setPassword } = data;
     
     if (accepted) {
       // Update the connection status
@@ -202,7 +370,8 @@ io.on("connection", (socket) => {
       // Notify the client
       socket.to(clientId).emit("connection-accepted", {
         hostId: socket.id,
-        hostName: hostSessionCodes[socket.id]?.computerName || "Unknown Host"
+        hostName: hostSessionCodes[socket.id]?.computerName || "Unknown Host",
+        setPassword: setPassword || false
       });
     } else {
       // Notify client of rejection
