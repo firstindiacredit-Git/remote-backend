@@ -7,6 +7,12 @@ const { Server } = require("socket.io");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const mongoose = require("mongoose");
+const dotenv = require("dotenv");
+
+
+
+const User = require("./controller/userController")
 
 // स्टोर क्लाइंट और होस्ट कनेक्शन मैपिंग
 const clientToHostMap = {};
@@ -41,6 +47,19 @@ function saveTrustedClients() {
 }
 
 const app = express();
+
+dotenv.config();
+
+// MongoDB setup
+const url = process.env.MONGODB_URI;
+mongoose.connect(url);
+
+const connection = mongoose.connection;
+connection.on('error', console.error.bind(console, 'MongoDB connection error:'));
+connection.once('open', () => {
+  console.log('MongoDB database connected');
+});
+
 const server = http.createServer(app);
 const io = new Server(server, {
   path: '/socket.io',
@@ -464,6 +483,8 @@ io.on("connection", (socket) => {
     });
   });
 });
+
+app.use("/api", User )
 
 app.use(express.static(path.join(__dirname, 'dist')));
 
