@@ -188,6 +188,20 @@ io.on("connection", (socket) => {
     }
     
     if (hostId) {
+      // Check if the host is actually connected - improved check
+      const hostSocket = io.sockets.sockets.get(hostId);
+      console.log(`Checking if host ${hostId} is connected:`, !!hostSocket);
+      
+      if (!hostSocket) {
+        console.log(`Host ${hostId} socket not found or not connected`);
+        // Host has a code but isn't currently connected
+        socket.emit("code-rejected", { 
+          message: "Client is not active right now, please open the app",
+          errorType: "client_not_active"
+        });
+        return;
+      }
+      
       // Add this client to pending connections for this host
       hostSessionCodes[hostId].pendingConnections[socket.id] = {
         timestamp: Date.now(),
@@ -207,7 +221,10 @@ io.on("connection", (socket) => {
       });
     } else {
       // Tell the client the code was invalid
-      socket.emit("code-rejected", { message: "Invalid session code" });
+      socket.emit("code-rejected", { 
+        message: "Invalid session code",
+        errorType: "invalid_code"
+      });
     }
   });
 
@@ -245,7 +262,16 @@ io.on("connection", (socket) => {
     
     // Clean up session codes
     if (hostSessionCodes[socket.id]) {
-      delete hostSessionCodes[socket.id];
+        // If this is a host disconnecting, notify any connected clients
+        for (const clientId in clientToHostMap) {
+            if (clientToHostMap[clientId] && 
+                (clientToHostMap[clientId] === socket.id || 
+                 (clientToHostMap[clientId].hostId && clientToHostMap[clientId].hostId === socket.id))) {
+                io.to(clientId).emit("host-unavailable", { hostId: socket.id });
+            }
+        }
+        
+        delete hostSessionCodes[socket.id];
     }
     
     // Also check if any host has this client in pending connections
@@ -333,9 +359,24 @@ io.on("connection", (socket) => {
       }
       
       if (!hostId) {
+        console.log(`No host found with machine ID: ${hostMachineId}`);
         // Host not found or not online
         socket.emit("permanent-access-error", { 
-          message: "Host not found or not online" 
+          message: "Client is not active right now, please open the app",
+          errorType: "client_not_active"
+        });
+        return;
+      }
+      
+      // Check if the host is actually connected
+      const hostSocket = io.sockets.sockets.get(hostId);
+      console.log(`Checking if host ${hostId} is connected:`, !!hostSocket);
+      
+      if (!hostSocket) {
+        console.log(`Host ${hostId} socket not found or not connected`);
+        socket.emit("permanent-access-error", { 
+          message: "Client is not active right now, please open the app",
+          errorType: "client_not_active"
         });
         return;
       }
@@ -381,7 +422,7 @@ io.on("connection", (socket) => {
         hostName: hostSessionCodes[hostId]?.computerName || "Unknown Host"
       });
       
-      // Notify host that a permanent access user has connected (but don't ask for permission)
+      // Notify host
       socket.to(hostId).emit("permanent-access-connected", {
         clientId: socket.id,
         userId,
