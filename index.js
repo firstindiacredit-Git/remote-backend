@@ -8,6 +8,9 @@ const path = require("path");
 const fs = require("fs");
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
+const PermanentAccess = require('./model/permanentAccessModel');
+const PermanentAccessRoutes = require('./controller/permanentAccessController');
+const bcrypt = require('bcryptjs');
 
 const User = require("./controller/userController")
 
@@ -84,7 +87,9 @@ io.on("connection", (socket) => {
       hostSessionCodes[socket.id] = {
         code: sessionCode,
         computerName: data && data.computerName ? data.computerName : "Unknown Host",
+        machineId: data && data.machineId ? data.machineId : null,
         pendingConnections: {},
+        permanentConnections: {}
       };
       
       // Send the code to the host
@@ -312,9 +317,145 @@ io.on("connection", (socket) => {
       fileSize: data.fileSize
     });
   });
+
+  // Add this new event handler in the socket.io connection section
+  socket.on("connect-with-permanent-access", async (data) => {
+    try {
+      const { hostMachineId, userId, accessPassword } = data;
+      
+      // Find the host with this machine ID
+      let hostId = null;
+      for (const [id, info] of Object.entries(hostSessionCodes)) {
+        if (info.machineId === hostMachineId) {
+          hostId = id;
+          break;
+        }
+      }
+      
+      if (!hostId) {
+        // Host not found or not online
+        socket.emit("permanent-access-error", { 
+          message: "Host not found or not online" 
+        });
+        return;
+      }
+      
+      // Verify the permanent access credentials
+      const accessEntry = await PermanentAccess.findOne({ 
+        hostMachineId, 
+        userId 
+      });
+      
+      if (!accessEntry) {
+        socket.emit("permanent-access-error", { 
+          message: "No permanent access found for this host" 
+        });
+        return;
+      }
+      
+      // Verify password using bcrypt
+      const isValid = await bcrypt.compare(accessPassword, accessEntry.accessPassword);
+      
+      if (!isValid) {
+        socket.emit("permanent-access-error", { 
+          message: "Invalid access password" 
+        });
+        return;
+      }
+      
+      // Store in permanent connections
+      if (hostSessionCodes[hostId]) {
+        hostSessionCodes[hostId].permanentConnections[socket.id] = {
+          userId,
+          timestamp: Date.now()
+        };
+      }
+      
+      // Update last accessed timestamp
+      accessEntry.lastAccessedAt = Date.now();
+      await accessEntry.save();
+      
+      // Connect directly without asking for permission
+      socket.emit("permanent-access-accepted", {
+        hostId,
+        hostName: hostSessionCodes[hostId]?.computerName || "Unknown Host"
+      });
+      
+      // Notify host that a permanent access user has connected (but don't ask for permission)
+      socket.to(hostId).emit("permanent-access-connected", {
+        clientId: socket.id,
+        userId,
+        timestamp: Date.now()
+      });
+      
+    } catch (error) {
+      console.error("Error in permanent access connection:", error);
+      socket.emit("permanent-access-error", { 
+        message: "Server error processing permanent access" 
+      });
+    }
+  });
+
+  // Add a handler for setting up permanent access after a session
+  socket.on("setup-permanent-access", async (data) => {
+    try {
+      const { hostId, password, userId } = data;
+      
+      // Check if host exists and get machine ID
+      if (!hostSessionCodes[hostId] || !hostSessionCodes[hostId].machineId) {
+        socket.emit("permanent-access-setup-failed", {
+          message: "Host not found or machine ID not available"
+        });
+        return;
+      }
+      
+      const hostMachineId = hostSessionCodes[hostId].machineId;
+      
+      // Hash the password
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(password, salt);
+      
+      // Create or update permanent access
+      let accessEntry = await PermanentAccess.findOne({ hostMachineId, userId });
+      
+      if (accessEntry) {
+        // Update existing
+        accessEntry.accessPassword = hashedPassword;
+        accessEntry.lastAccessedAt = Date.now();
+        await accessEntry.save();
+      } else {
+        // Create new
+        accessEntry = new PermanentAccess({
+          hostMachineId,
+          userId,
+          accessPassword: hashedPassword
+        });
+        await accessEntry.save();
+      }
+      
+      // Notify client success
+      socket.emit("permanent-access-setup-success", {
+        hostMachineId,
+        message: "Permanent access set up successfully"
+      });
+      
+      // Notify host
+      socket.to(hostId).emit("permanent-access-granted", {
+        clientId: socket.id,
+        userId
+      });
+      
+    } catch (error) {
+      console.error("Error setting up permanent access:", error);
+      socket.emit("permanent-access-setup-failed", {
+        message: "Server error setting up permanent access"
+      });
+    }
+  });
 });
 
 app.use("/api", User )
+app.use("/api/permanent-access", PermanentAccessRoutes);
 
 app.use(express.static(path.join(__dirname, 'dist')));
 
