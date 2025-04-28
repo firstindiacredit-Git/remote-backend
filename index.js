@@ -440,7 +440,7 @@ io.on("connection", (socket) => {
   // Add a handler for setting up permanent access after a session
   socket.on("setup-permanent-access", async (data) => {
     try {
-      const { hostId, password, userId } = data;
+      const { hostId, password, userId, label } = data;
       
       // Check if host exists and get machine ID
       if (!hostSessionCodes[hostId] || !hostSessionCodes[hostId].machineId) {
@@ -463,13 +463,15 @@ io.on("connection", (socket) => {
         // Update existing
         accessEntry.accessPassword = hashedPassword;
         accessEntry.lastAccessedAt = Date.now();
+        if (label) accessEntry.label = label;
         await accessEntry.save();
       } else {
         // Create new
         accessEntry = new PermanentAccess({
           hostMachineId,
           userId,
-          accessPassword: hashedPassword
+          accessPassword: hashedPassword,
+          label: label || 'My Computer'
         });
         await accessEntry.save();
       }

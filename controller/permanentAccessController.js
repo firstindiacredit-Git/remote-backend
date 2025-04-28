@@ -171,4 +171,47 @@ router.post('/verify', verifyToken, async (req, res) => {
     }
 });
 
+// Update permanent access label
+router.put('/update-label/:id', verifyToken, async (req, res) => {
+    try {
+        const accessId = req.params.id;
+        const { label } = req.body;
+        const userId = req.user.id;
+        
+        if (!label) {
+            return res.status(400).json({
+                success: false,
+                message: 'Label is required'
+            });
+        }
+        
+        const accessEntry = await PermanentAccess.findOne({
+            _id: accessId,
+            userId
+        });
+        
+        if (!accessEntry) {
+            return res.status(404).json({
+                success: false,
+                message: 'Access entry not found or unauthorized'
+            });
+        }
+        
+        // Update label
+        accessEntry.label = label;
+        await accessEntry.save();
+        
+        res.status(200).json({
+            success: true,
+            message: 'Label updated successfully'
+        });
+    } catch (error) {
+        console.error('Error updating permanent access label:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error'
+        });
+    }
+});
+
 module.exports = router;
