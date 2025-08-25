@@ -13,6 +13,7 @@ const dotenv = require("dotenv");
 
 
 const User = require("./controller/userController")
+const PermanentAccess = require("./model/permanentAccessModel");
 
 // स्टोर क्लाइंट और होस्ट कनेक्शन मैपिंग
 const clientToHostMap = {};
@@ -128,7 +129,169 @@ io.on("connection", (socket) => {
     }
   });
 
-  // New handler for setting a permanent password
+  // New handler for setting permanent access credentials
+  socket.on("set-permanent-access", async (data) => {
+    try {
+      const { label, password, clientId } = data;
+      
+      if (!label || !password || !clientId) {
+        socket.emit("permanent-access-response", { 
+          success: false, 
+          message: "Missing label, password or client ID"
+        });
+        return;
+      }
+
+      // Hash the password
+      const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+      
+      // Get machine ID and computer name from the host session
+      const machineId = hostSessionCodes[socket.id]?.machineId;
+      const computerName = hostSessionCodes[socket.id]?.computerName || "Unknown Computer";
+      
+      if (!machineId) {
+        socket.emit("permanent-access-response", { 
+          success: false, 
+          message: "Missing machine ID for host"
+        });
+        return;
+      }
+      
+      // Check if permanent access record exists for this machine
+      let permanentAccess = await PermanentAccess.findOne({ machineId });
+      
+      if (!permanentAccess) {
+        // Create new permanent access record
+        permanentAccess = new PermanentAccess({
+          machineId,
+          computerName,
+          accessCredentials: []
+        });
+      }
+      
+      // Add new credential
+      permanentAccess.accessCredentials.push({
+        label,
+        password: hashedPassword,
+        clientId,
+        createdAt: Date.now(),
+        lastUsed: Date.now()
+      });
+      
+      // Save to database
+      await permanentAccess.save();
+      
+      socket.emit("permanent-access-response", {
+        success: true,
+        message: "Permanent access set successfully"
+      });
+      
+      // Notify the client
+      socket.to(clientId).emit("permanent-access-set-notification", {
+        hostId: socket.id,
+        machineId: machineId,
+        computerName: computerName,
+        label: label
+      });
+      
+    } catch (error) {
+      console.error("Error setting permanent access:", error);
+      socket.emit("permanent-access-response", {
+        success: false,
+        message: "Error setting permanent access: " + error.message
+      });
+    }
+  });
+
+  // Handler for connecting with permanent access credentials
+  socket.on("connect-with-permanent-access", async (data) => {
+    try {
+      const { machineId, label, password } = data;
+      
+      if (!machineId || !label || !password) {
+        socket.emit("permanent-access-auth-response", {
+          success: false,
+          message: "Missing machine ID, label or password"
+        });
+        return;
+      }
+      
+      // Hash the provided password
+      const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+      
+      // Find the permanent access record
+      const permanentAccess = await PermanentAccess.findOne({ machineId });
+      
+      if (!permanentAccess) {
+        socket.emit("permanent-access-auth-response", {
+          success: false,
+          message: "No permanent access found for this machine"
+        });
+        return;
+      }
+      
+      // Find the matching credential
+      const credential = permanentAccess.accessCredentials.find(
+        cred => cred.label === label && cred.password === hashedPassword
+      );
+      
+      if (!credential) {
+        socket.emit("permanent-access-auth-response", {
+          success: false,
+          message: "Invalid label or password"
+        });
+        return;
+      }
+      
+      // Find the host with this machine ID
+      let hostId = null;
+      for (const [id, info] of Object.entries(hostSessionCodes)) {
+        if (info.machineId === machineId) {
+          hostId = id;
+          break;
+        }
+      }
+      
+      if (!hostId) {
+        socket.emit("permanent-access-auth-response", {
+          success: false,
+          message: "Host not found or not online"
+        });
+        return;
+      }
+      
+      // Update last used timestamp
+      credential.lastUsed = Date.now();
+      await permanentAccess.save();
+      
+      // Auto-accept the connection without host approval
+      console.log(`Auto-accepting client ${socket.id} to host ${hostId} (permanent access auth)`);
+      
+      // Notify the client
+      socket.emit("connection-accepted", {
+        hostId: hostId,
+        hostName: hostSessionCodes[hostId]?.computerName || "Unknown Host",
+        automatic: true,
+        permanentAccess: true
+      });
+      
+      // Also notify the host
+      socket.to(hostId).emit("client-auto-connected", {
+        clientId: socket.id,
+        timestamp: Date.now(),
+        permanentAccess: true
+      });
+      
+    } catch (error) {
+      console.error("Error with permanent access authentication:", error);
+      socket.emit("permanent-access-auth-response", {
+        success: false,
+        message: "Authentication error: " + error.message
+      });
+    }
+  });
+
+  // Legacy handler for setting a permanent password (keeping for backward compatibility)
   socket.on("set-access-password", (data) => {
     try {
       const { password, clientId } = data;
