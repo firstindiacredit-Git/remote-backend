@@ -24,6 +24,9 @@ const hostSessionCodes = {};
 // Store trusted clients with their passwords
 const trustedClients = {};
 
+// Store pending permanent access notifications
+const pendingPermanentAccessNotifications = {};
+
 // Path to store persistent passwords
 const PASSWORDS_FILE = path.join(__dirname, 'trusted_clients.json');
 
@@ -97,6 +100,14 @@ io.on("connection", (socket) => {
     console.log(`Socket ${socket.id} upgraded transport to: ${transport.name}`);
   });
 
+  // Check for pending permanent access notifications
+  if (pendingPermanentAccessNotifications[socket.id]) {
+    console.log(`Sending pending permanent access notification to ${socket.id}`);
+    const notification = pendingPermanentAccessNotifications[socket.id];
+    socket.emit("permanent-access-set-notification", notification);
+    delete pendingPermanentAccessNotifications[socket.id];
+  }
+
   // Handle keep-alive pings
   socket.on("keep-alive", () => {
     // Just acknowledge the ping, no need to do anything
@@ -132,9 +143,11 @@ io.on("connection", (socket) => {
   // New handler for setting permanent access credentials
   socket.on("set-permanent-access", async (data) => {
     try {
+      console.log("Received set-permanent-access request:", data);
       const { label, password, clientId } = data;
       
       if (!label || !password || !clientId) {
+        console.log("Missing required fields:", { label: !!label, password: !!password, clientId: !!clientId });
         socket.emit("permanent-access-response", { 
           success: false, 
           message: "Missing label, password or client ID"
@@ -149,7 +162,10 @@ io.on("connection", (socket) => {
       const machineId = hostSessionCodes[socket.id]?.machineId;
       const computerName = hostSessionCodes[socket.id]?.computerName || "Unknown Computer";
       
+      console.log("Host session data:", { machineId, computerName, socketId: socket.id });
+      
       if (!machineId) {
+        console.log("Missing machine ID for host");
         socket.emit("permanent-access-response", { 
           success: false, 
           message: "Missing machine ID for host"
@@ -161,12 +177,15 @@ io.on("connection", (socket) => {
       let permanentAccess = await PermanentAccess.findOne({ machineId });
       
       if (!permanentAccess) {
+        console.log("Creating new permanent access record for machine:", machineId);
         // Create new permanent access record
         permanentAccess = new PermanentAccess({
           machineId,
           computerName,
           accessCredentials: []
         });
+      } else {
+        console.log("Found existing permanent access record for machine:", machineId);
       }
       
       // Add new credential
@@ -178,14 +197,17 @@ io.on("connection", (socket) => {
         lastUsed: Date.now()
       });
       
+      console.log("Saving permanent access record...");
       // Save to database
       await permanentAccess.save();
+      console.log("Permanent access record saved successfully");
       
       socket.emit("permanent-access-response", {
         success: true,
         message: "Permanent access set successfully"
       });
       
+      console.log("Sending notification to client:", clientId);
       // Notify the client
       socket.to(clientId).emit("permanent-access-set-notification", {
         hostId: socket.id,
@@ -194,11 +216,85 @@ io.on("connection", (socket) => {
         label: label
       });
       
+      // Also try to emit directly to the client socket as backup
+      const clientSocket = io.sockets.sockets.get(clientId);
+      if (clientSocket) {
+        console.log("Sending direct notification to client socket");
+        clientSocket.emit("permanent-access-set-notification", {
+          hostId: socket.id,
+          machineId: machineId,
+          computerName: computerName,
+          label: label
+        });
+      } else {
+        console.log("Client not connected, storing notification for later");
+        // Store the notification to send when client reconnects
+        pendingPermanentAccessNotifications[clientId] = {
+          hostId: socket.id,
+          machineId: machineId,
+          computerName: computerName,
+          label: label
+        };
+      }
+      
+      console.log("Notification sent. Checking if client is still connected...");
+      // Check if the client is still connected
+      if (clientSocket) {
+        console.log("Client socket found and connected");
+      } else {
+        console.log("Client socket not found or disconnected");
+      }
+      
     } catch (error) {
       console.error("Error setting permanent access:", error);
       socket.emit("permanent-access-response", {
         success: false,
         message: "Error setting permanent access: " + error.message
+      });
+    }
+  });
+
+  // New handler for fetching permanent access data for a client
+  socket.on("fetch-permanent-access", async (data) => {
+    try {
+      console.log("Received fetch-permanent-access request:", data);
+      const { clientId } = data;
+      
+      if (!clientId) {
+        console.log("Missing client ID in fetch request");
+        socket.emit("permanent-access-data", { 
+          success: false, 
+          message: "Missing client ID"
+        });
+        return;
+      }
+      
+      console.log("Searching for permanent access records for client:", clientId);
+      // Find all permanent access records that have credentials for this client
+      const permanentAccessRecords = await PermanentAccess.find({
+        'accessCredentials.clientId': clientId
+      });
+      
+      console.log("Found permanent access records:", permanentAccessRecords.length);
+      
+      // Format the data for the client
+      const formattedData = permanentAccessRecords.map(record => ({
+        machineId: record.machineId,
+        computerName: record.computerName,
+        credentials: record.accessCredentials.filter(cred => cred.clientId === clientId)
+      }));
+      
+      console.log("Sending formatted data to client:", formattedData);
+      socket.emit("permanent-access-data", {
+        success: true,
+        data: formattedData
+      });
+      
+    } catch (error) {
+      console.error("Error fetching permanent access data:", error);
+      socket.emit("permanent-access-data", {
+        success: false,
+        message: "Error fetching permanent access data: " + error.message
       });
     }
   });
@@ -567,6 +663,8 @@ io.on("connection", (socket) => {
     }
   });
 
+
+
   // Log detailed disconnect reasons with better error handling
   socket.on('disconnect', (reason) => {
     console.log(`Socket ${socket.id} disconnected due to: ${reason}`);
@@ -582,6 +680,11 @@ io.on("connection", (socket) => {
           hostSessionCodes[hostId].pendingConnections[socket.id]) {
         delete hostSessionCodes[hostId].pendingConnections[socket.id];
       }
+    }
+    
+    // Clean up pending permanent access notifications for this socket
+    if (pendingPermanentAccessNotifications[socket.id]) {
+      delete pendingPermanentAccessNotifications[socket.id];
     }
     
     // Check if clientToHostMap exists and clean up any associated connections
@@ -648,6 +751,39 @@ io.on("connection", (socket) => {
 });
 
 app.use("/api", User )
+
+// Test endpoint to check permanent access data
+app.get('/api/test-permanent-access', async (req, res) => {
+  try {
+    console.log("Testing permanent access endpoint...");
+    
+    // Check if we can connect to the database
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(500).json({ 
+        success: false, 
+        message: "Database not connected",
+        readyState: mongoose.connection.readyState
+      });
+    }
+    
+    // Try to find all permanent access records
+    const allRecords = await PermanentAccess.find({});
+    console.log("Found permanent access records:", allRecords.length);
+    
+    res.json({
+      success: true,
+      message: "Database connection working",
+      recordCount: allRecords.length,
+      records: allRecords
+    });
+  } catch (error) {
+    console.error("Error testing permanent access:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error testing permanent access: " + error.message
+    });
+  }
+});
 
 app.use(express.static(path.join(__dirname, 'dist')));
 
