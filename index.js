@@ -245,6 +245,33 @@ io.on("connection", (socket) => {
         console.log("Client socket not found or disconnected");
       }
       
+      console.log("About to start automatic connection acceptance...");
+      
+      // Automatically accept the connection for permanent access
+      console.log("Auto-accepting connection for permanent access");
+      console.log("Sending connection-accepted to client:", clientId);
+      console.log("Sending client-auto-connected to host:", socket.id);
+      
+      // Send connection acceptance events immediately
+      console.log("Sending connection acceptance events immediately");
+      socket.to(clientId).emit("connection-accepted", {
+        hostId: socket.id,
+        hostName: computerName,
+        automatic: true,
+        permanentAccess: true
+      });
+      
+      // Notify the host about the auto-connected client
+      socket.emit("client-auto-connected", {
+        clientId: clientId,
+        timestamp: Date.now(),
+        permanentAccess: true
+      });
+      
+      console.log("Connection acceptance events sent successfully");
+      
+      console.log("set-permanent-access handler completed successfully");
+      
     } catch (error) {
       console.error("Error setting permanent access:", error);
       socket.emit("permanent-access-response", {
@@ -569,11 +596,13 @@ io.on("connection", (socket) => {
 
   socket.on("connect-to-host", (hostId) => {
     console.log(`Client ${socket.id} wants to connect to host ${hostId}`);
+    console.log("Forwarding controller-connected event to host");
     socket.to(hostId).emit("controller-connected", socket.id);
   });
 
   socket.on("request-screen", (data) => {
     console.log(`Screen requested from ${data.from} to ${data.to}`);
+    console.log("Forwarding request-screen event to host");
     socket.to(data.to).emit("request-screen", data);
   });
 
