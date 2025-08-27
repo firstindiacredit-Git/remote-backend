@@ -10,7 +10,11 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 
-
+// DISCONNECT DETECTION SYSTEM:
+// This system detects when a host disconnects and automatically notifies connected clients.
+// When a host disconnects (closes app, loses connection, etc.), all connected clients receive
+// a "host-disconnected" event with host information and are redirected to the main page.
+// This ensures clients are immediately aware when the host is no longer available.
 
 const User = require("./controller/userController")
 const PermanentAccess = require("./model/permanentAccessModel");
@@ -597,6 +601,13 @@ io.on("connection", (socket) => {
   socket.on("connect-to-host", (hostId) => {
     console.log(`Client ${socket.id} wants to connect to host ${hostId}`);
     console.log("Forwarding controller-connected event to host");
+    
+    // Store the connection mapping
+    clientToHostMap[socket.id] = {
+      hostId: hostId,
+      timestamp: Date.now()
+    };
+    
     socket.to(hostId).emit("controller-connected", socket.id);
   });
 
@@ -692,11 +703,46 @@ io.on("connection", (socket) => {
     }
   });
 
-
+  // Handle manual client disconnection by host
+  socket.on("disconnect-client", (clientId) => {
+    console.log(`Host ${socket.id} is disconnecting client ${clientId}`);
+    
+    // Get host info
+    const hostInfo = hostSessionCodes[socket.id] ? {
+      hostId: socket.id,
+      computerName: hostSessionCodes[socket.id].computerName,
+      machineId: hostSessionCodes[socket.id].machineId
+    } : null;
+    
+    // Notify the client that they have been disconnected
+    const clientSocket = io.sockets.sockets.get(clientId);
+    if (clientSocket) {
+      clientSocket.emit("host-disconnected", {
+        hostId: socket.id,
+        computerName: hostInfo?.computerName || "Unknown Host",
+        machineId: hostInfo?.machineId,
+        reason: "Host manually disconnected you"
+      });
+    }
+    
+    // Clean up the connection mapping
+    if (clientToHostMap[clientId]) {
+      delete clientToHostMap[clientId];
+      console.log(`Cleaned up connection mapping for client ${clientId}`);
+    }
+  });
 
   // Log detailed disconnect reasons with better error handling
   socket.on('disconnect', (reason) => {
     console.log(`Socket ${socket.id} disconnected due to: ${reason}`);
+    
+    // Check if this is a host disconnecting
+    const isHost = hostSessionCodes[socket.id];
+    const hostInfo = isHost ? {
+      hostId: socket.id,
+      computerName: hostSessionCodes[socket.id].computerName,
+      machineId: hostSessionCodes[socket.id].machineId
+    } : null;
     
     // Clean up session codes
     if (hostSessionCodes[socket.id]) {
@@ -718,16 +764,66 @@ io.on("connection", (socket) => {
     
     // Check if clientToHostMap exists and clean up any associated connections
     if (clientToHostMap) {
-      for (const [clientId, hostId] of Object.entries(clientToHostMap)) {
+      for (const [clientId, hostData] of Object.entries(clientToHostMap)) {
         // Check if the value is an object with timestamp or just a string
-        if (typeof hostId === 'object' && hostId.hostId) {
-          if (clientId === socket.id || hostId.hostId === socket.id) {
+        if (typeof hostData === 'object' && hostData.hostId) {
+          if (clientId === socket.id || hostData.hostId === socket.id) {
+            // If this is a host disconnecting, notify the connected client
+            if (hostData.hostId === socket.id && hostInfo) {
+              console.log(`Notifying client ${clientId} that host ${socket.id} disconnected`);
+              const clientSocket = io.sockets.sockets.get(clientId);
+              if (clientSocket) {
+                clientSocket.emit("host-disconnected", {
+                  hostId: socket.id,
+                  computerName: hostInfo.computerName,
+                  machineId: hostInfo.machineId,
+                  reason: reason
+                });
+              }
+            }
             delete clientToHostMap[clientId];
             console.log(`Cleaned up connection mapping for ${socket.id}`);
           }
-        } else if (clientId === socket.id || hostId === socket.id) {
+        } else if (clientId === socket.id || hostData === socket.id) {
+          // If this is a host disconnecting, notify the connected client
+          if (hostData === socket.id && hostInfo) {
+            console.log(`Notifying client ${clientId} that host ${socket.id} disconnected`);
+            const clientSocket = io.sockets.sockets.get(clientId);
+            if (clientSocket) {
+              clientSocket.emit("host-disconnected", {
+                hostId: socket.id,
+                computerName: hostInfo.computerName,
+                machineId: hostInfo.machineId,
+                reason: reason
+              });
+            }
+          }
           delete clientToHostMap[clientId];
           console.log(`Cleaned up connection mapping for ${socket.id}`);
+        }
+      }
+    }
+    
+    // If this was a host, also check for any clients that might be connected to this host
+    // and notify them about the disconnection
+    if (isHost) {
+      console.log(`Host ${socket.id} disconnected, notifying all connected clients`);
+      
+      // Find all clients connected to this host
+      for (const [clientId, hostData] of Object.entries(clientToHostMap)) {
+        const connectedHostId = typeof hostData === 'object' ? hostData.hostId : hostData;
+        
+        if (connectedHostId === socket.id) {
+          console.log(`Notifying client ${clientId} about host ${socket.id} disconnection`);
+          const clientSocket = io.sockets.sockets.get(clientId);
+          if (clientSocket) {
+            clientSocket.emit("host-disconnected", {
+              hostId: socket.id,
+              computerName: hostInfo.computerName,
+              machineId: hostInfo.machineId,
+              reason: reason
+            });
+          }
         }
       }
     }
