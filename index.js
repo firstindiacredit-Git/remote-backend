@@ -15,6 +15,14 @@ const dotenv = require("dotenv");
 // When a host disconnects (closes app, loses connection, etc.), all connected clients receive
 // a "host-disconnected" event with host information and are redirected to the main page.
 // This ensures clients are immediately aware when the host is no longer available.
+//
+// TESTING THE SYSTEM:
+// 1. Start the backend server
+// 2. Start the Electron app (host)
+// 3. Connect from the web client using permanent access
+// 4. Close the Electron app or disconnect the host
+// 5. The web client should immediately show an alert and return to main page
+// 6. Check the backend console logs for disconnect detection messages
 
 const User = require("./controller/userController")
 const PermanentAccess = require("./model/permanentAccessModel");
@@ -608,6 +616,9 @@ io.on("connection", (socket) => {
       timestamp: Date.now()
     };
     
+    console.log(`Connection mapping stored: Client ${socket.id} -> Host ${hostId}`);
+    console.log(`Updated clientToHostMap:`, clientToHostMap);
+    
     socket.to(hostId).emit("controller-connected", socket.id);
   });
 
@@ -744,6 +755,11 @@ io.on("connection", (socket) => {
       machineId: hostSessionCodes[socket.id].machineId
     } : null;
     
+    console.log(`Is host disconnecting: ${isHost ? 'YES' : 'NO'}`);
+    if (isHost) {
+      console.log(`Host info:`, hostInfo);
+    }
+    
     // Clean up session codes
     if (hostSessionCodes[socket.id]) {
       delete hostSessionCodes[socket.id];
@@ -764,6 +780,8 @@ io.on("connection", (socket) => {
     
     // Check if clientToHostMap exists and clean up any associated connections
     if (clientToHostMap) {
+      console.log(`Current clientToHostMap:`, clientToHostMap);
+      
       for (const [clientId, hostData] of Object.entries(clientToHostMap)) {
         // Check if the value is an object with timestamp or just a string
         if (typeof hostData === 'object' && hostData.hostId) {
@@ -779,6 +797,9 @@ io.on("connection", (socket) => {
                   machineId: hostInfo.machineId,
                   reason: reason
                 });
+                console.log(`Host disconnection notification sent to client ${clientId}`);
+              } else {
+                console.log(`Client ${clientId} not found in socket list`);
               }
             }
             delete clientToHostMap[clientId];
@@ -796,6 +817,9 @@ io.on("connection", (socket) => {
                 machineId: hostInfo.machineId,
                 reason: reason
               });
+              console.log(`Host disconnection notification sent to client ${clientId}`);
+            } else {
+              console.log(`Client ${clientId} not found in socket list`);
             }
           }
           delete clientToHostMap[clientId];
@@ -823,6 +847,9 @@ io.on("connection", (socket) => {
               machineId: hostInfo.machineId,
               reason: reason
             });
+            console.log(`Host disconnection notification sent to client ${clientId}`);
+          } else {
+            console.log(`Client ${clientId} not found in socket list`);
           }
         }
       }
